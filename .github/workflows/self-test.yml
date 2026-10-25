@@ -1,0 +1,13 @@
+name: Self test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    uses: ./.github/workflows/audit.yml
+    with:
+      config-path: fixtures/site-audit.config.yml

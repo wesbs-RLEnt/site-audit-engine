@@ -1,0 +1,5 @@
+site:
+  name: fixture-site
+  url: https://example.com
+  stack: react-ssr
+autonomy: report

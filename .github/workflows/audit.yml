@@ -1,0 +1,36 @@
+name: Site audit (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Path to the site config in the calling repo
+        type: string
+        default: site-audit.config.yml
+
+# Least privilege: this step only reads. Later steps get their own narrow permissions.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout site repo (read-only)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Echo config
+        env:
+          CONFIG_PATH: ${{ inputs.config-path }}
+        run: |
+          echo "Repo: $GITHUB_REPOSITORY"
+          if [ -f "$CONFIG_PATH" ]; then
+            echo "--- $CONFIG_PATH ---"
+            cat "$CONFIG_PATH"
+          else
+            echo "::error::No config found at $CONFIG_PATH"
+            exit 1
+          fi
