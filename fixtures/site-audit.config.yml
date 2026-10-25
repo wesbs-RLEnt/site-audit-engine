@@ -3,3 +3,6 @@ site:
   url: https://example.com
   stack: react-ssr
 autonomy: report
+scope:
+  allowed_paths: ["src/", "public/"]
+  forbidden_paths: ["supabase/", ".env*", ".github/"]
