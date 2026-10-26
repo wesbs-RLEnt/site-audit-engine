@@ -28,6 +28,12 @@ const addVersion = (name, version) => {
   if (!installed.has(name)) installed.set(name, new Set());
   installed.get(name).add(version);
 };
+// name -> Set(dependency names), used to find what is reachable from runtime dependencies
+const edges = new Map();
+const addEdges = (name, ...maps) => {
+  if (!edges.has(name)) edges.set(name, new Set());
+  for (const m of maps) for (const d of Object.keys(m ?? {})) edges.get(name).add(d);
+};
 
 let lockfile;
 if (existsSync(join(dir, "bun.lock"))) {
@@ -37,18 +43,35 @@ if (existsSync(join(dir, "bun.lock"))) {
   for (const entry of Object.values(JSON.parse(text).packages ?? {})) {
     const id = entry[0]; // "name@version"
     const at = id.lastIndexOf("@");
-    if (at > 0) addVersion(id.slice(0, at), id.slice(at + 1));
+    if (at > 0) {
+      addVersion(id.slice(0, at), id.slice(at + 1));
+      addEdges(id.slice(0, at), entry[2]?.dependencies, entry[2]?.optionalDependencies);
+    }
   }
 } else if (existsSync(join(dir, "package-lock.json"))) {
   lockfile = "package-lock.json";
   const lock = JSON.parse(readFileSync(join(dir, "package-lock.json"), "utf8"));
   for (const [path, info] of Object.entries(lock.packages ?? {})) {
     if (!path || !info.version) continue;
-    addVersion(path.split("node_modules/").pop(), info.version);
+    const n = path.split("node_modules/").pop();
+    addVersion(n, info.version);
+    addEdges(n, info.dependencies, info.optionalDependencies);
   }
 } else {
   out({ skipped: "no supported lockfile (bun.lock or package-lock.json)" });
   process.exit(0);
+}
+
+// --- runtime reachability: everything reachable from package.json "dependencies" ---
+// Name-level approximation of the lockfile graph. Conservative: a package that any runtime
+// dependency pulls in counts as runtime, even if it is only used at build time there.
+const runtime = new Set();
+const queue = Object.keys({ ...pkg.dependencies, ...pkg.optionalDependencies });
+while (queue.length) {
+  const n = queue.pop();
+  if (runtime.has(n)) continue;
+  runtime.add(n);
+  for (const d of edges.get(n) ?? []) queue.push(d);
 }
 
 // --- vulnerabilities ---
@@ -66,6 +89,7 @@ for (const [name, list] of Object.entries(adv)) {
     vulnerabilities.push({
       package: name,
       direct: name in direct,
+      runtime: runtime.has(name),
       installed: [...installed.get(name)],
       severity: a.severity,
       title: clip(a.title, 200),
@@ -74,6 +98,15 @@ for (const [name, list] of Object.entries(adv)) {
     });
   }
 }
+
+// Latest published version for each vulnerable package, so fixes can name a target.
+const latestOf = async (name) => {
+  const r = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2F")}/latest`);
+  return r.ok ? (await r.json()).version : null;
+};
+const vulnLatest = {};
+for (const name of new Set(vulnerabilities.map((v) => v.package))) vulnLatest[name] = await latestOf(name);
+for (const v of vulnerabilities) v.latest = vulnLatest[v.package];
 
 // --- outdated (direct dependencies only) ---
 const parse = (v) => v.split("-")[0].split(".").map(Number);

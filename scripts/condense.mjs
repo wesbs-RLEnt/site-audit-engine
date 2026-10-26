@@ -59,6 +59,11 @@ if (rvr) {
     "missing:og:description": ["low", "auto-safe", "Missing og:description"],
     "missing:og:image": ["low", "auto-safe", "Missing og:image, so social previews have no image"],
     "relative_url:canonical": ["medium", "auto-safe", "Canonical URL is relative; it must be absolute"],
+    "relative_url:og:url": ["medium", "auto-safe", "og:url is relative; it must be absolute"],
+    "missing:structured data": ["low", "auto-safe", "Page has no JSON-LD structured data"],
+    "jsonld_invalid:structured data": ["medium", "auto-safe", "JSON-LD structured data does not parse"],
+    "jsonld_relative_url:structured data": ["medium", "auto-safe", "JSON-LD uses relative URLs; they must be absolute"],
+    "jsonld_other_host:structured data": ["medium", "needs-approval", "JSON-LD url or image points to a different domain than the site"],
   };
   const groups = new Map();
   for (const r of rvr.results) {
@@ -83,7 +88,10 @@ if (rvr) {
     if (!spec) continue;
     add(`rvr:${k}`, {
       severity: spec[0], fix_class: spec[1], category: "Technical SEO", title: spec[2],
-      evidence: { pages_affected: new Set(pages).size, examples: list(pages, 3) },
+      evidence: {
+        pages_affected: new Set(pages).size, examples: list(pages, 3),
+        ...(hits.some((h) => h.examples) ? { values: hits.flatMap((h) => h.examples ?? []).slice(0, 3) } : {}),
+      },
     });
   }
   for (const d of rvr.duplicate_titles ?? []) {
@@ -161,14 +169,14 @@ if (lh && lh.pages[0]) {
     if (threshold !== undefined && (score < threshold || (wasOpen && score < threshold + NOISE_POINTS))) {
       add(key, {
         severity: threshold - score >= 20 ? "high" : "medium", fix_class: "needs-approval",
-        category: cat === "performance" ? "Performance" : "Technical SEO",
+        category: { performance: "Performance", seo: "Technical SEO", accessibility: "Accessibility" }[cat],
         title: `Lighthouse ${cat} score below threshold`,
         evidence: { score, threshold, resolves_at_or_above: threshold + NOISE_POINTS, run_spread: p.spread[cat], metrics_ms: cat === "performance" ? Object.fromEntries(Object.entries(p.metrics).map(([k, v]) => [k, Math.round(v * 1000) / 1000])) : undefined },
       });
     }
   }
   for (const a of p.failing_audits.filter((a) => a.category !== "performance")) {
-    add(`lh:audit:${a.id}`, { severity: "low", fix_class: "needs-approval", category: a.category === "seo" ? "Technical SEO" : "Performance", title: `Lighthouse audit failing: ${a.title}`, evidence: { audit: a.id, category: a.category, score: a.score, page: p.url } });
+    add(`lh:audit:${a.id}`, { severity: "low", fix_class: "needs-approval", category: { seo: "Technical SEO", accessibility: "Accessibility", "best-practices": "Security/Maintenance" }[a.category] ?? "Technical SEO", title: `Lighthouse audit failing: ${a.title}`, evidence: { audit: a.id, category: a.category, score: a.score, page: p.url } });
   }
 }
 
@@ -177,13 +185,21 @@ if (deps && !deps.skipped) {
   const SEVMAP = { critical: "critical", high: "high", moderate: "medium", low: "low" };
   const byPkg = new Map();
   for (const v of deps.vulnerabilities) byPkg.set(v.package, [...(byPkg.get(v.package) ?? []), v]);
+  const down = { critical: "high", high: "medium", medium: "low", low: "low" };
   for (const [pkg, vs] of byPkg) {
-    const sev = vs.reduce((s, v) => max(s, SEVMAP[v.severity] ?? "low"), "low");
+    let sev = vs.reduce((s, v) => max(s, SEVMAP[v.severity] ?? "low"), "low");
+    // Not reachable from runtime dependencies: build tooling, so one level less urgent.
+    const runtime = vs.some((v) => v.runtime);
+    if (!runtime) sev = down[sev];
     add(`deps:vuln:${pkg}`, {
       severity: sev, fix_class: "needs-approval", category: "Security/Maintenance",
       title: `Vulnerable dependency: ${pkg}`,
-      evidence: { direct: vs[0].direct, installed: vs[0].installed, advisory_count: new Set(vs.map((v) => v.url)).size, advisories: list(vs.map((v) => v.title), 3), urls: list(vs.map((v) => v.url), 3) },
-      note: "Verify exploitability before acting; advisory data comes from the npm registry.",
+      evidence: {
+        scope: runtime ? "runtime" : "build-only (severity lowered one level)",
+        direct: vs[0].direct, installed: vs[0].installed, latest_version: vs[0].latest ?? null,
+        advisory_count: new Set(vs.map((v) => v.url)).size, advisories: list(vs.map((v) => v.title), 3), urls: list(vs.map((v) => v.url), 3),
+      },
+      note: "Verify exploitability before acting; advisory data comes from the npm registry. Scope is an approximation from the lockfile graph.",
     });
   }
   for (const kind of ["patch", "minor", "major"]) {
