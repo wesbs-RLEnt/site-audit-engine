@@ -3,23 +3,12 @@
 // Output: JSON on stdout. Logs go to stderr.
 import * as cheerio from "cheerio";
 import { chromium } from "playwright";
+import { clip, pageList, parseArgs } from "./lib.mjs";
 
-const args = process.argv.slice(2);
-const siteUrl = args[0];
-if (!siteUrl) {
-  console.error("Usage: raw-vs-rendered.mjs <siteUrl> [--sitemap /sitemap.xml] [--max-pages 25]");
-  process.exit(2);
-}
-const opt = (name, fallback) => {
-  const i = args.indexOf(name);
-  return i === -1 ? fallback : args[i + 1];
-};
-const sitemapPath = opt("--sitemap", "/sitemap.xml");
-const maxPages = Number(opt("--max-pages", "25"));
-const base = new URL(siteUrl);
-
-// Page content is untrusted: cap length so it can't flood the findings JSON.
-const clip = (s, n = 300) => (s == null ? null : String(s).trim().slice(0, n));
+const { base, sitemapPath, maxPages } = parseArgs(
+  process.argv.slice(2),
+  "raw-vs-rendered.mjs <siteUrl> [--sitemap /sitemap.xml] [--max-pages 25]",
+);
 
 function extract($) {
   const meta = (sel) => clip($(sel).attr("content"));
@@ -33,16 +22,6 @@ function extract($) {
     h1_count: $("h1").length,
     body_text_length: $("body").text().replace(/\s+/g, " ").trim().length,
   };
-}
-
-async function pageList() {
-  const res = await fetch(new URL(sitemapPath, base));
-  if (!res.ok) throw new Error(`sitemap ${sitemapPath} returned ${res.status}`);
-  const $ = cheerio.load(await res.text(), { xmlMode: true });
-  const urls = $("url > loc")
-    .map((_, el) => new URL($(el).text().trim(), base).href) // tolerate relative <loc>
-    .get();
-  return [...new Set(urls)].slice(0, maxPages);
 }
 
 function flags(url, raw, rendered) {
@@ -64,7 +43,7 @@ function flags(url, raw, rendered) {
   return out;
 }
 
-const urls = await pageList();
+const urls = await pageList(base, sitemapPath, maxPages);
 console.error(`Checking ${urls.length} pages`);
 const browser = await chromium.launch();
 const results = [];

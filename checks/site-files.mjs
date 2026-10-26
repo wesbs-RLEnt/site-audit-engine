@@ -2,23 +2,14 @@
 // Usage: node checks/site-files.mjs <siteUrl> [--sitemap /sitemap.xml] [--max-pages 25]
 // Output: JSON on stdout.
 import * as cheerio from "cheerio";
+import { clip, parseArgs } from "./lib.mjs";
 
-const args = process.argv.slice(2);
-const siteUrl = args[0];
-if (!siteUrl) {
-  console.error("Usage: site-files.mjs <siteUrl> [--sitemap /sitemap.xml] [--max-pages 25]");
-  process.exit(2);
-}
-const opt = (name, fallback) => {
-  const i = args.indexOf(name);
-  return i === -1 ? fallback : args[i + 1];
-};
-const sitemapPath = opt("--sitemap", "/sitemap.xml");
-const maxPages = Number(opt("--max-pages", "25"));
-const base = new URL(siteUrl);
+const { base, sitemapPath, maxPages } = parseArgs(
+  process.argv.slice(2),
+  "site-files.mjs <siteUrl> [--sitemap /sitemap.xml] [--max-pages 25]",
+);
 const findings = [];
 const add = (check, detail) => findings.push({ check, ...detail });
-const clip = (s, n = 300) => String(s).trim().slice(0, n);
 
 // --- robots.txt ---
 const robotsRes = await fetch(new URL("/robots.txt", base));
