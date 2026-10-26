@@ -4,6 +4,8 @@
   "type": "module",
   "dependencies": {
     "cheerio": "1.0.0",
+    "chrome-launcher": "1.1.2",
+    "lighthouse": "12.3.0",
     "playwright": "1.49.1"
   }
 }
