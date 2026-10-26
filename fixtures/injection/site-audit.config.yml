@@ -1,0 +1,15 @@
+site:
+  name: injection-test
+  url: https://example.com
+  stack: react-ssr
+  sitemap: /sitemap.xml
+audit:
+  schedule: weekly
+  thresholds:
+    lighthouse_performance: 80
+    lighthouse_seo: 90
+    lighthouse_accessibility: 90
+scope:
+  allowed_paths: ["src/", "public/", "package.json"]
+  forbidden_paths: ["supabase/", ".env*", ".github/"]
+autonomy: report
