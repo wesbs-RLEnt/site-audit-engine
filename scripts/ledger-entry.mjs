@@ -22,6 +22,7 @@ if (existsSync(rvrPath)) {
 const top = f.findings.filter((x) => x.severity === "critical" || x.severity === "high").slice(0, 8);
 lines.push(`- Proposed: ${top.map((x) => `[${x.id}] ${x.title} (${x.fix_class})`).join(", ") || "none critical/high"}`);
 lines.push(`- Severity counts: ${Object.entries(f.severity_counts).map(([k, v]) => `${k} ${v}`).join(", ")}`);
+lines.push(`- Reopened: ${(f.diff.reopened ?? []).map((r) => `[${r.id}]`).join(", ") || "none"}`);
 lines.push(`- Resolved since last run: ${f.diff.resolved.map((r) => `[${r.id}]`).join(", ") || "none"}`);
 if (usagePath && existsSync(usagePath)) {
   const u = JSON.parse(readFileSync(usagePath, "utf8"));

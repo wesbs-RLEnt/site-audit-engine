@@ -15,7 +15,7 @@ const findings = JSON.parse(readFileSync(findingsPath, "utf8"));
 const config = parse(readFileSync(configPath, "utf8"));
 const errors = [];
 
-const known = new Set([...findings.findings.map((f) => f.id), ...findings.diff.resolved.map((r) => r.id)]);
+const known = new Set([...findings.findings.map((f) => f.id), ...findings.diff.resolved.map((r) => r.id), ...(findings.diff.reopened ?? []).map((r) => r.id)]);
 for (const id of new Set(report.match(/F-[0-9a-f]{6}/g) ?? [])) {
   if (!known.has(id)) errors.push(`cites unknown finding ${id}`);
 }
@@ -35,6 +35,9 @@ for (const h of ["## Summary", "## Findings", "## Resolved since last run", "## 
   if (!report.includes(h)) errors.push(`missing section ${h}`);
 }
 if (!/<!-- ledger-notes: [^\n]*-->\s*$/.test(report)) errors.push("missing final ledger-notes comment");
+const top3 = /<!-- top3: ([^>]*?) -->\s*<!-- ledger-notes:/.exec(report);
+if (!top3) errors.push("missing top3 comment before the ledger-notes comment");
+else if (top3[1].split(",").map((x) => x.trim()).some((id) => !findings.findings.some((f) => f.id === id))) errors.push("top3 comment cites an unknown finding");
 if (report.split(/\s+/).length > 1200) errors.push("report too long");
 
 if (errors.length) {

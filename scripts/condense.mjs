@@ -155,18 +155,28 @@ if (links) {
 
 // ---------- lighthouse ----------
 const scoreDeltas = {};
+const watching = []; // below threshold but not yet confirmed by enough consecutive runs
+const lhStreak = {};
 if (lh && lh.pages[0]) {
   const p = lh.pages[0];
   const th = config.audit?.thresholds ?? {};
   const map = { performance: "lighthouse_performance", seo: "lighthouse_seo", accessibility: "lighthouse_accessibility" };
   for (const [cat, tk] of Object.entries(map)) {
     const score = p.scores[cat], threshold = th[tk];
-    // Hysteresis: a finding opens when the score drops below the threshold, but once open it
-    // only resolves when the score clears the threshold by the noise margin. Otherwise a score
-    // hovering near the threshold would flip the finding on and off from run to run.
+    if (threshold === undefined) continue;
+    // Consecutive runs below the threshold. Performance varies about 14 points between CI
+    // runs, so it needs 2 in a row by default; the others need 1. Override with
+    // audit.consecutive_runs.<category> in the site config.
+    const below = score < threshold;
+    lhStreak[cat] = below ? (previous?.lh_streak?.[cat] ?? 0) + 1 : 0;
+    const needed = config.audit?.consecutive_runs?.[cat] ?? (cat === "performance" ? 2 : 1);
+    // Hysteresis: once open, a finding only resolves when the score clears the threshold by
+    // the noise margin, so a score hovering near the threshold does not flip it on and off.
     const key = `lh:score:${cat}`;
     const wasOpen = !!previous?.findings?.[idFor(key)];
-    if (threshold !== undefined && (score < threshold || (wasOpen && score < threshold + NOISE_POINTS))) {
+    const open = (below && lhStreak[cat] >= needed) || (wasOpen && score < threshold + NOISE_POINTS);
+    if (below && !open) watching.push({ check: `lighthouse ${cat}`, score, threshold, consecutive_runs_below: lhStreak[cat], needed });
+    if (open) {
       add(key, {
         severity: threshold - score >= 20 ? "high" : "medium", fix_class: "needs-approval",
         category: { performance: "Performance", seo: "Technical SEO", accessibility: "Accessibility" }[cat],
@@ -215,15 +225,29 @@ if (deps && !deps.skipped) {
 
 // ---------- diff vs previous run ----------
 const all = [...byKey.values()];
+const checksRun = { rvr: !!rvr, files: !!files, links: !!links, lh: !!lh, deps: !!deps && !deps.skipped };
+// A finding whose check did not run this time is "not checked", never "resolved".
+const notChecked = Object.entries(previous?.findings ?? {}).filter(([, v]) => v.key && checksRun[v.key.split(":")[0]] === false);
+const notCheckedIds = new Set(notChecked.map(([id]) => id));
 const prevIds = new Set(Object.keys(previous?.findings ?? {}));
 const curIds = new Set(all.map((f) => f.id));
-for (const f of all) f.first_seen = previous?.findings?.[f.id]?.first_seen ?? date;
+const history = { ...(previous?.resolved_history ?? {}) };
+for (const f of all) f.first_seen = previous?.findings?.[f.id]?.first_seen ?? history[f.id]?.first_seen ?? date;
+const reopened = all.filter((f) => !prevIds.has(f.id) && history[f.id]);
+const reopenedIds = new Set(reopened.map((f) => f.id));
+const resolvedNow = [...prevIds].filter((id) => !curIds.has(id) && !notCheckedIds.has(id));
 const diff = {
   first_run: !previous,
-  new: all.filter((f) => !prevIds.has(f.id)).map((f) => f.id),
+  new: all.filter((f) => !prevIds.has(f.id) && !reopenedIds.has(f.id)).map((f) => f.id),
+  reopened: reopened.map((f) => ({ id: f.id, title: f.title, resolved_on: history[f.id].resolved_on })),
   persisting: all.filter((f) => prevIds.has(f.id)).map((f) => f.id),
-  resolved: [...prevIds].filter((id) => !curIds.has(id)).map((id) => ({ id, title: previous.findings[id].title })),
+  resolved: resolvedNow.map((id) => ({ id, title: previous.findings[id].title })),
+  not_checked: notChecked.length, // previous findings whose check did not run this time
 };
+for (const id of reopenedIds) delete history[id];
+for (const id of resolvedNow) history[id] = { title: previous.findings[id].title, resolved_on: date, first_seen: previous.findings[id].first_seen };
+// keep the history bounded
+const histEntries = Object.entries(history).sort((a, b) => b[1].resolved_on.localeCompare(a[1].resolved_on)).slice(0, 100);
 
 const scores = lh?.pages[0]?.scores ?? null;
 if (scores && previous?.scores) {
@@ -237,18 +261,27 @@ all.sort((a, b) => SEV.indexOf(a.severity) - SEV.indexOf(b.severity) || a.id.loc
 const shown = all.slice(0, MAX_FINDINGS);
 const counts = Object.fromEntries(SEV.map((s) => [s, all.filter((f) => f.severity === s).length]));
 
+const scoreHistory = {};
+for (const k of Object.keys(scores ?? {})) scoreHistory[k] = [...(previous?.score_history?.[k] ?? []), scores[k]].slice(-5);
+
 const findings = {
   site: config.site.name,
   url: config.site.url,
   date,
   checks_run: Object.fromEntries([["raw-vs-rendered", !!rvr], ["site-files", !!files], ["links-and-alt", !!links], ["lighthouse", !!lh], ["deps", !!deps && !deps.skipped]]),
-  scores, score_changes: scoreDeltas, severity_counts: counts,
+  scores, score_history: scoreHistory, score_changes: scoreDeltas, watching, severity_counts: counts,
   omitted_lower_priority: all.length - shown.length,
   diff, findings: shown,
 };
 writeFileSync(opt("--out", "findings.json"), JSON.stringify(findings, null, 2));
 writeFileSync(opt("--state", "state.json"), JSON.stringify({
   date, scores,
-  findings: Object.fromEntries(all.map((f) => [f.id, { title: f.title, severity: f.severity, first_seen: f.first_seen }])),
+  score_history: scores ? scoreHistory : previous?.score_history ?? {},
+  lh_streak: lh ? lhStreak : previous?.lh_streak ?? {},
+  resolved_history: Object.fromEntries(histEntries),
+  findings: {
+    ...Object.fromEntries(notChecked.map(([id, v]) => [id, v])), // carried forward, not re-checked
+    ...Object.fromEntries(all.map((f) => [f.id, { key: f.key, title: f.title, severity: f.severity, first_seen: f.first_seen }])),
+  },
 }, null, 2));
-console.error(`${all.length} findings (${shown.length} listed): ${JSON.stringify(counts)}; new ${diff.new.length}, resolved ${diff.resolved.length}`);
+console.error(`${all.length} findings (${shown.length} listed): ${JSON.stringify(counts)}; new ${diff.new.length}, reopened ${diff.reopened.length}, resolved ${diff.resolved.length}, watching ${watching.length}`);

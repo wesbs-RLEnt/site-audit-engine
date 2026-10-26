@@ -239,5 +239,5 @@ jobs:
         env:
           ISSUE_URL: ${{ steps.issue.outputs.url }}
         run: |
-          node engine/scripts/slack-message.mjs findings.json "$ISSUE_URL" > slack.json
+          node engine/scripts/slack-message.mjs findings.json "$ISSUE_URL" report.md > slack.json
           curl --fail --silent --show-error -X POST -H 'Content-type: application/json' --data @slack.json "$SLACK_WEBHOOK_URL"
