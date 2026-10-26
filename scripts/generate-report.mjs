@@ -33,7 +33,7 @@ const res = await fetch(`${process.env.ANTHROPIC_BASE_URL ?? "https://api.anthro
   headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
   body: JSON.stringify({
     model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5",
-    max_tokens: 3000,
+    max_tokens: 8000, // headroom: the model may spend output tokens on reasoning before the report
     system: readFileSync(promptPath, "utf8"),
     messages: [{ role: "user", content: input }],
   }),
@@ -44,6 +44,10 @@ if (!res.ok) {
   process.exit(1);
 }
 const data = await res.json();
+if (data.stop_reason === "max_tokens") {
+  console.error(`Response cut off at max_tokens (output ${data.usage?.output_tokens})`);
+  process.exit(1);
+}
 const text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("");
 if (!text.trim()) {
   console.error("Empty response");
