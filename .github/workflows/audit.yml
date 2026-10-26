@@ -8,7 +8,11 @@ on:
         type: string
         default: site-audit.config.yml
       engine-ref:
-        description: Engine ref to use for check scripts
+        description: Engine ref (tag or branch) to use for check scripts
+        type: string
+        default: main
+      prompts-ref:
+        description: Ref (tag or branch) of the private prompts repo
         type: string
         default: main
       run-checks:
@@ -143,6 +147,7 @@ jobs:
         with:
           repository: wesbs-RLEnt/site-audit-prompts
           ssh-key: ${{ secrets.PROMPTS_DEPLOY_KEY }}
+          ref: ${{ inputs.prompts-ref }}
           path: prompts
           persist-credentials: false
 
