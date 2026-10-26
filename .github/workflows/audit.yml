@@ -7,8 +7,16 @@ on:
         description: Path to the site config in the calling repo
         type: string
         default: site-audit.config.yml
+      engine-ref:
+        description: Engine ref to use for check scripts
+        type: string
+        default: main
+      run-checks:
+        description: Set false to only validate the config (used by the engine self-test)
+        type: boolean
+        default: true
 
-# Least privilege: this step only reads. Later steps get their own narrow permissions.
+# Least privilege: this job only reads. Later steps get their own narrow permissions.
 permissions:
   contents: read
 
@@ -20,49 +28,72 @@ jobs:
       - name: Checkout site repo (read-only)
         uses: actions/checkout@v4
         with:
+          path: site
           persist-credentials: false
 
-      - name: Validate config
-        env:
-          CONFIG_PATH: ${{ inputs.config-path }}
-        run: |
-          pip install --quiet pyyaml
-          python3 - <<'PY'
-          import os, sys, yaml
-          path = os.environ["CONFIG_PATH"]
-          if not os.path.isfile(path):
-              sys.exit(f"::error::No config found at {path}")
-          c = yaml.safe_load(open(path)) or {}
-          errors = []
-          site = c.get("site") or {}
-          for k in ("name", "url", "stack"):
-              if not site.get(k):
-                  errors.append(f"site.{k} is required")
-          if site.get("url") and not str(site["url"]).startswith("https://"):
-              errors.append("site.url must start with https://")
-          if site.get("stack") not in ("lovable-vite", "react-ssr", "wordpress", "other"):
-              errors.append("site.stack must be lovable-vite | react-ssr | wordpress | other")
-          if c.get("autonomy", "report") != "report":
-              errors.append("autonomy must be 'report' in the MVP")
-          for k in ("allowed_paths", "forbidden_paths"):
-              if not isinstance((c.get("scope") or {}).get(k), list):
-                  errors.append(f"scope.{k} must be a list")
-          if errors:
-              for e in errors:
-                  print(f"::error::{e}")
-              sys.exit(1)
-          print("Config valid")
-          PY
+      - name: Checkout engine
+        uses: actions/checkout@v4
+        with:
+          repository: wesbs-RLEnt/site-audit-engine
+          ref: ${{ inputs.engine-ref }}
+          path: engine
+          persist-credentials: false
 
-      - name: Echo config
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install engine dependencies
+        working-directory: engine
+        run: npm ci
+
+      - name: Validate config
+        id: config
+        run: node engine/scripts/validate-config.mjs "site/${{ inputs.config-path }}" >> "$GITHUB_OUTPUT"
+
+      - name: Install browser
+        if: inputs.run-checks
+        working-directory: engine
+        run: npx playwright install --with-deps chromium
+
+      - name: Checkout previous ledger state
+        if: inputs.run-checks
+        continue-on-error: true # the branch does not exist on the first run
+        uses: actions/checkout@v4
+        with:
+          ref: audit-ledger
+          path: ledger
+          persist-credentials: false
+
+      - name: Run checks
+        if: inputs.run-checks
         env:
-          CONFIG_PATH: ${{ inputs.config-path }}
+          URL: ${{ steps.config.outputs.url }}
+          SITEMAP: ${{ steps.config.outputs.sitemap }}
         run: |
-          echo "Repo: $GITHUB_REPOSITORY"
-          if [ -f "$CONFIG_PATH" ]; then
-            echo "--- $CONFIG_PATH ---"
-            cat "$CONFIG_PATH"
-          else
-            echo "::error::No config found at $CONFIG_PATH"
-            exit 1
-          fi
+          mkdir -p results
+          # A failing check is recorded as missing, not fatal: the others still run.
+          run() { node "engine/checks/$1.mjs" "$URL" "${@:2}" > "results/$1.json" || { echo "::warning::check $1 failed"; rm -f "results/$1.json"; }; }
+          run raw-vs-rendered --sitemap "$SITEMAP"
+          run site-files --sitemap "$SITEMAP"
+          run links-and-alt --sitemap "$SITEMAP"
+          run lighthouse --sitemap "$SITEMAP"
+          node engine/checks/deps.mjs site > results/deps.json || { echo "::warning::check deps failed"; rm -f results/deps.json; }
+
+      - name: Condense findings
+        if: inputs.run-checks
+        run: |
+          prev=""
+          [ -f ledger/state.json ] && prev="--previous ledger/state.json"
+          node engine/scripts/condense.mjs --results results --config "site/${{ inputs.config-path }}" $prev --out findings.json --state state.json
+
+      - name: Upload results
+        if: inputs.run-checks
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-results
+          path: |
+            findings.json
+            state.json
+            results/
+          retention-days: 14

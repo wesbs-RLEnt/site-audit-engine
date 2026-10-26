@@ -11,3 +11,4 @@ jobs:
     uses: ./.github/workflows/audit.yml
     with:
       config-path: fixtures/site-audit.config.yml
+      run-checks: false
