@@ -2,8 +2,9 @@
 // A plain API call (not an agent loop) means the model cannot run commands, read files
 // or reach the network, whatever the page content tries to tell it.
 // Usage: node scripts/generate-report.mjs <prompt.md> <config.yml> <findings.json> [previous-ledger.md] > report.md
-// Env: ANTHROPIC_API_KEY (required), ANTHROPIC_MODEL, ANTHROPIC_BASE_URL (tests only)
-import { existsSync, readFileSync } from "node:fs";
+// Env: ANTHROPIC_API_KEY (required), ANTHROPIC_MODEL, USAGE_FILE (write token counts there),
+//      ANTHROPIC_BASE_URL (tests only)
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const [promptPath, configPath, findingsPath, ledgerPath] = process.argv.slice(2);
 if (!findingsPath) {
@@ -48,5 +49,7 @@ if (!text.trim()) {
   console.error("Empty response");
   process.exit(1);
 }
-console.error(`tokens: in ${data.usage?.input_tokens}, out ${data.usage?.output_tokens}`);
+const usage = { model: data.model ?? process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5-5", input_tokens: data.usage?.input_tokens ?? 0, output_tokens: data.usage?.output_tokens ?? 0 };
+console.error(`tokens: in ${usage.input_tokens}, out ${usage.output_tokens}`);
+if (process.env.USAGE_FILE) writeFileSync(process.env.USAGE_FILE, JSON.stringify(usage));
 process.stdout.write(text.trim() + "\n");

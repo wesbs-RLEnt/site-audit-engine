@@ -155,6 +155,7 @@ jobs:
       - name: Write report (Claude, no tools)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USAGE_FILE: usage.json
         run: node engine/scripts/generate-report.mjs prompts/prompts/report.md config.yml findings.json previous-ledger.md > report.md
 
       - name: Upload draft report
@@ -162,7 +163,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: audit-report
-          path: report.md
+          path: |
+            report.md
+            usage.json
           retention-days: 14
 
       - name: Check report
@@ -218,7 +221,7 @@ jobs:
             git rm -rf . -q
             printf '# Agent ledger\n\n' > agent-ledger.md
           fi
-          node ../engine/scripts/ledger-entry.mjs ../findings.json ../results ../report.md >> agent-ledger.md
+          node ../engine/scripts/ledger-entry.mjs ../findings.json ../results ../report.md ../usage.json >> agent-ledger.md
           cp ../state.json state.json
           git add agent-ledger.md state.json
           git commit -m "Ledger: audit $(node -p "require('../findings.json').date")"

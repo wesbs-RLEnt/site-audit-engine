@@ -1,10 +1,10 @@
 // Builds the ledger entry (design doc section 7.2) from findings.json, the raw check
 // results and the report's ledger-notes comment. Deterministic; no model involved.
-// Usage: node scripts/ledger-entry.mjs <findings.json> <results-dir> <report.md>
+// Usage: node scripts/ledger-entry.mjs <findings.json> <results-dir> <report.md> [usage.json]
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [findingsPath, resultsDir, reportPath] = process.argv.slice(2);
+const [findingsPath, resultsDir, reportPath, usagePath] = process.argv.slice(2);
 const f = JSON.parse(readFileSync(findingsPath, "utf8"));
 const report = readFileSync(reportPath, "utf8");
 const lines = [`## ${f.date}`];
@@ -23,6 +23,10 @@ const top = f.findings.filter((x) => x.severity === "critical" || x.severity ===
 lines.push(`- Proposed: ${top.map((x) => `[${x.id}] ${x.title} (${x.fix_class})`).join(", ") || "none critical/high"}`);
 lines.push(`- Severity counts: ${Object.entries(f.severity_counts).map(([k, v]) => `${k} ${v}`).join(", ")}`);
 lines.push(`- Resolved since last run: ${f.diff.resolved.map((r) => `[${r.id}]`).join(", ") || "none"}`);
+if (usagePath && existsSync(usagePath)) {
+  const u = JSON.parse(readFileSync(usagePath, "utf8"));
+  lines.push(`- Claude usage: ${u.input_tokens} in / ${u.output_tokens} out tokens (${u.model})`);
+}
 const notes = /<!-- ledger-notes: (.*?) -->/.exec(report)?.[1] ?? "";
 lines.push(`- Notes: ${notes.replace(/[\r\n]+/g, " ").slice(0, 400)}`);
 console.log(lines.join("\n") + "\n");
