@@ -37,11 +37,11 @@ const links = load("links-and-alt.json");
 const lh = load("lighthouse.json");
 const deps = load("deps.json");
 
+const idFor = (key) => "F-" + createHash("sha1").update(key).digest("hex").slice(0, 6);
 const byKey = new Map();
 function add(key, f) {
   if (byKey.has(key)) return;
-  const id = "F-" + createHash("sha1").update(key).digest("hex").slice(0, 6);
-  byKey.set(key, { id, key, ...f });
+  byKey.set(key, { id: idFor(key), key, ...f });
 }
 const max = (a, b) => (SEV.indexOf(a) <= SEV.indexOf(b) ? a : b);
 const list = (xs, n = 5) => [...new Set(xs)].slice(0, n);
@@ -153,12 +153,17 @@ if (lh && lh.pages[0]) {
   const map = { performance: "lighthouse_performance", seo: "lighthouse_seo", accessibility: "lighthouse_accessibility" };
   for (const [cat, tk] of Object.entries(map)) {
     const score = p.scores[cat], threshold = th[tk];
-    if (threshold !== undefined && score < threshold) {
-      add(`lh:score:${cat}`, {
+    // Hysteresis: a finding opens when the score drops below the threshold, but once open it
+    // only resolves when the score clears the threshold by the noise margin. Otherwise a score
+    // hovering near the threshold would flip the finding on and off from run to run.
+    const key = `lh:score:${cat}`;
+    const wasOpen = !!previous?.findings?.[idFor(key)];
+    if (threshold !== undefined && (score < threshold || (wasOpen && score < threshold + NOISE_POINTS))) {
+      add(key, {
         severity: threshold - score >= 20 ? "high" : "medium", fix_class: "needs-approval",
         category: cat === "performance" ? "Performance" : "Technical SEO",
         title: `Lighthouse ${cat} score below threshold`,
-        evidence: { score, threshold, run_spread: p.spread[cat], metrics_ms: cat === "performance" ? Object.fromEntries(Object.entries(p.metrics).map(([k, v]) => [k, Math.round(v * 1000) / 1000])) : undefined },
+        evidence: { score, threshold, resolves_at_or_above: threshold + NOISE_POINTS, run_spread: p.spread[cat], metrics_ms: cat === "performance" ? Object.fromEntries(Object.entries(p.metrics).map(([k, v]) => [k, Math.round(v * 1000) / 1000])) : undefined },
       });
     }
   }
