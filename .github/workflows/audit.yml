@@ -24,6 +24,8 @@ on:
         required: false
       PROMPTS_DEPLOY_KEY:
         required: false
+      SLACK_WEBHOOK_URL:
+        required: false
 
 # Least privilege: this job only reads. Later steps get their own narrow permissions.
 permissions:
@@ -179,6 +181,8 @@ jobs:
     permissions:
       contents: write
       issues: write
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -197,14 +201,16 @@ jobs:
           persist-credentials: false
 
       - name: Create issue
+        id: issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           site=$(node -p "require('./findings.json').site")
           date=$(node -p "require('./findings.json').date")
-          gh issue create --repo "$GITHUB_REPOSITORY" \
+          url=$(gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "Site audit: $site - $date" \
-            --body-file report.md
+            --body-file report.md)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - name: Append ledger entry (audit-ledger branch only)
         env:
@@ -226,3 +232,12 @@ jobs:
           git add agent-ledger.md state.json
           git commit -m "Ledger: audit $(node -p "require('../findings.json').date")"
           git push origin audit-ledger
+
+      - name: Notify Slack
+        if: env.SLACK_WEBHOOK_URL != ''
+        continue-on-error: true # a Slack outage must not fail the audit
+        env:
+          ISSUE_URL: ${{ steps.issue.outputs.url }}
+        run: |
+          node engine/scripts/slack-message.mjs findings.json "$ISSUE_URL" > slack.json
+          curl --fail --silent --show-error -X POST -H 'Content-type: application/json' --data @slack.json "$SLACK_WEBHOOK_URL"
