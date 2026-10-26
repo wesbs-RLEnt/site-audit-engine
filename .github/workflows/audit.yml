@@ -15,6 +15,15 @@ on:
         description: Set false to only validate the config (used by the engine self-test)
         type: boolean
         default: true
+      use-claude:
+        description: Write the report with Claude, then publish the issue and ledger (needs the secrets below)
+        type: boolean
+        default: false
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      PROMPTS_DEPLOY_KEY:
+        required: false
 
 # Least privilege: this job only reads. Later steps get their own narrow permissions.
 permissions:
@@ -87,6 +96,12 @@ jobs:
           [ -f ledger/state.json ] && prev="--previous ledger/state.json"
           node engine/scripts/condense.mjs --results results --config "site/${{ inputs.config-path }}" $prev --out findings.json --state state.json
 
+      - name: Stage config and previous ledger for later jobs
+        if: inputs.run-checks
+        run: |
+          cp "site/${{ inputs.config-path }}" config.yml
+          [ -f ledger/agent-ledger.md ] && cp ledger/agent-ledger.md previous-ledger.md || true
+
       - name: Upload results
         if: inputs.run-checks
         uses: actions/upload-artifact@v4
@@ -95,5 +110,116 @@ jobs:
           path: |
             findings.json
             state.json
+            config.yml
+            previous-ledger.md
             results/
           retention-days: 14
+
+  # Holds the Anthropic key and the prompts deploy key. Read-only: it cannot write to any repo.
+  report:
+    needs: audit
+    if: inputs.run-checks && inputs.use-claude
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: audit-results
+
+      - name: Checkout engine
+        uses: actions/checkout@v4
+        with:
+          repository: wesbs-RLEnt/site-audit-engine
+          ref: ${{ inputs.engine-ref }}
+          path: engine
+          persist-credentials: false
+
+      - name: Checkout private prompts
+        uses: actions/checkout@v4
+        with:
+          repository: wesbs-RLEnt/site-audit-prompts
+          ssh-key: ${{ secrets.PROMPTS_DEPLOY_KEY }}
+          path: prompts
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install engine dependencies
+        working-directory: engine
+        run: npm ci
+
+      - name: Write report (Claude, no tools)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node engine/scripts/generate-report.mjs prompts/prompts/report.md config.yml findings.json previous-ledger.md > report.md
+
+      - name: Upload draft report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: report.md
+          retention-days: 14
+
+      - name: Check report
+        run: node engine/scripts/check-report.mjs report.md findings.json config.yml
+
+  # Holds write access (issues, and the ledger branch) and no Claude or API key.
+  publish:
+    needs: report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: audit-results
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: audit-report
+
+      - name: Checkout engine
+        uses: actions/checkout@v4
+        with:
+          repository: wesbs-RLEnt/site-audit-engine
+          ref: ${{ inputs.engine-ref }}
+          path: engine
+          persist-credentials: false
+
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          site=$(node -p "require('./findings.json').site")
+          date=$(node -p "require('./findings.json').date")
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Site audit: $site - $date" \
+            --body-file report.md
+
+      - name: Append ledger entry (audit-ledger branch only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global user.name "site-audit-bot"
+          git config --global user.email "site-audit-bot@users.noreply.github.com"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ledger
+          cd ledger
+          if git ls-remote --exit-code --heads origin audit-ledger >/dev/null; then
+            git checkout audit-ledger
+          else
+            git checkout --orphan audit-ledger
+            git rm -rf . -q
+            printf '# Agent ledger\n\n' > agent-ledger.md
+          fi
+          node ../engine/scripts/ledger-entry.mjs ../findings.json ../results ../report.md >> agent-ledger.md
+          cp ../state.json state.json
+          git add agent-ledger.md state.json
+          git commit -m "Ledger: audit $(node -p "require('../findings.json').date")"
+          git push origin audit-ledger
